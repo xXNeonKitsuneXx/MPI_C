@@ -83,7 +83,6 @@ void write_matrix(const char* filename, int** matrix) {
 }
 
 // --- Main MPI Logic ---
-
 int main(int argc, char** argv) {
     int rank, size;
     int** matrixA = NULL;
@@ -95,6 +94,10 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // --- Start Timer (All processes sync here) ---
+    MPI_Barrier(MPI_COMM_WORLD);
+    start_time = MPI_Wtime();
+
     // --- Root Process (rank 0): Allocate and Read Data ---
     if (rank == 0) {
         matrixA = allocate_matrix();
@@ -104,14 +107,9 @@ int main(int argc, char** argv) {
             fprintf(stderr, "Root matrix allocation failed\n");
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
-
         read_matrix("matrixA.txt", matrixA);
         read_matrix("matrixB.txt", matrixB);
     }
-
-    // Start timer (all processes sync here)
-    MPI_Barrier(MPI_COMM_WORLD);
-    start_time = MPI_Wtime();
 
     // --- All Processes: Calculate row distribution ---
     int rows_per_proc = ROWS / size;
@@ -120,7 +118,6 @@ int main(int argc, char** argv) {
     int local_size = local_rows * COLS; // Total elements for this process
 
     // --- All Processes: Allocate local buffers ---
-    // These are 1D arrays, not 2D, as they just store a flat chunk of data
     int* local_A = (int*)malloc(local_size * sizeof(int));
     int* local_B = (int*)malloc(local_size * sizeof(int));
     int* local_Result = (int*)malloc(local_size * sizeof(int));
@@ -131,9 +128,8 @@ int main(int argc, char** argv) {
     }
 
     // --- Root Process (rank 0): Prepare Scatterv parameters ---
-    // MPI_Scatterv is needed because the row distribution might be uneven
     int* send_counts = NULL;
-    int* displs = NULL; // Displacements
+    int* displs = NULL; 
 
     if (rank == 0) {
         send_counts = (int*)malloc(size * sizeof(int));
@@ -142,23 +138,22 @@ int main(int argc, char** argv) {
         int current_displ = 0;
         for (int i = 0; i < size; i++) {
             int rows_for_this_proc = rows_per_proc + (i < remainder ? 1 : 0);
-            send_counts[i] = rows_for_this_proc * COLS; // Size in elements
+            send_counts[i] = rows_for_this_proc * COLS;
             displs[i] = current_displ;
             current_displ += send_counts[i];
         }
     }
     
     // --- Scatter Data ---
-    // Root (matrixA[0]) points to the start of the contiguous data block
     MPI_Scatterv(
-        (rank == 0) ? matrixA[0] : NULL,  // Send buffer (root only)
-        send_counts,                     // Array of send counts (root only)
-        displs,                          // Array of displacements (root only)
-        MPI_INT,                         // Data type
-        local_A,                         // Receive buffer
-        local_size,                      // Receive count (max elements this proc will get)
-        MPI_INT,                         // Data type
-        0,                               // Root process
+        (rank == 0) ? matrixA[0] : NULL, 
+        send_counts,                     
+        displs,                          
+        MPI_INT,                         
+        local_A,                         
+        local_size,                      
+        MPI_INT,                         
+        0,                               
         MPI_COMM_WORLD
     );
 
@@ -180,41 +175,44 @@ int main(int argc, char** argv) {
     }
 
     // --- Gather Data ---
-    // The send/recv counts and displacements are the same for Gatherv
     MPI_Gatherv(
-        local_Result,                    // Send buffer
-        local_size,                      // Send count
-        MPI_INT,                         // Data type
-        (rank == 0) ? matrixResult[0] : NULL, // Receive buffer (root only)
-        send_counts,                     // Array of receive counts (root only)
-        displs,                          // Array of displacements (root only)
-        MPI_INT,                         // Data type
-        0,                               // Root process
+        local_Result,                    
+        local_size,                      
+        MPI_INT,                         
+        (rank == 0) ? matrixResult[0] : NULL, 
+        send_counts,                     
+        displs,                          
+        MPI_INT,                         
+        0,                               
         MPI_COMM_WORLD
     );
 
-    // Stop timer
-    end_time = MPI_Wtime();
-
-    // --- Root Process (rank 0): Write Result and Print Time ---
+    // --- Root Process (rank 0): Write Result ---
     if (rank == 0) {
         write_matrix("result_parallel.txt", matrixResult);
+    }
 
-        // Print time to stdout for the comparison program
-        printf("%f\n", end_time - start_time);
-
-        // Free root-specific memory
+    // --- Free ALL Memory (must be done *before* final barrier) ---
+    if (rank == 0) {
         free_matrix(matrixA);
         free_matrix(matrixB);
         free_matrix(matrixResult);
         free(send_counts);
         free(displs);
     }
-
-    // All processes free local buffers
     free(local_A);
     free(local_B);
     free(local_Result);
+
+    // --- Stop Timer (All processes sync here) ---
+    MPI_Barrier(MPI_COMM_WORLD);
+    end_time = MPI_Wtime();
+
+    // --- Root Process (rank 0): Print Time ---
+    if (rank == 0) {
+        // Print time to stdout for the comparison program
+        printf("%f\n", end_time - start_time);
+    }
 
     MPI_Finalize();
     return 0;

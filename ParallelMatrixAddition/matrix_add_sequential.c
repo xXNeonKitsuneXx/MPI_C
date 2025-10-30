@@ -1,19 +1,23 @@
 /**
- * matrix_add_sequential.c
+ * matrix_add_sequential_mpi.c
  *
- * Performs sequential matrix addition (A + B) for 1000x1000 matrices.
- * Reads from 'matrixA.txt' and 'matrixB.txt'.
- * Writes the result to 'result_sequential.txt'.
+ * This is a "sequential" program written to run within an MPI environment.
+ * Only process 0 will perform the matrix reading, addition, and writing.
+ * All other processes will initialize and finalize but do no work.
  *
- * This program prints its execution time for the addition to stdout,
- * which is used by the 'matrix_add_compare' program.
+ * This is useful for comparing against:
+ * 1. The TRUE sequential version (to see MPI init/finalize overhead).
+ * 2. The FULL parallel version (to see MPI communication overhead).
+ *
+ * It still prints its execution time to stdout for the compare script.
  *
  * Compile:
- * gcc -O3 -o sequential matrix_add_sequential.c
+ * mpicc -O3 -o sequential_mpi matrix_add_sequential_mpi.c
  * Run:
- * ./sequential
+ * mpirun -np 4 ./sequential_mpi
  */
 
+#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h> // For high-resolution timing
@@ -21,59 +25,35 @@
 #define ROWS 10000
 #define COLS 10000
 
-/**
- * Allocates a 2D matrix contiguously in memory.
- * This is important for performance and allows easy MPI operations
- * on the whole data block if needed (though not used in this file).
- *
- * @return A pointer to an array of row pointers (int**).
- */
+// --- Helper functions (same as other versions) ---
+
 int** allocate_matrix() {
-    // Allocate memory for the data block (all elements)
     int* data = (int*)malloc(ROWS * COLS * sizeof(int));
     if (data == NULL) return NULL;
-
-    // Allocate memory for the row pointers
     int** row_ptrs = (int**)malloc(ROWS * sizeof(int*));
     if (row_ptrs == NULL) {
         free(data);
         return NULL;
     }
-
-    // Point the row pointers to the correct locations in the data block
     for (int i = 0; i < ROWS; i++) {
         row_ptrs[i] = &(data[i * COLS]);
     }
     return row_ptrs;
 }
 
-/**
- * Frees a contiguously allocated matrix.
- *
- * @param matrix The matrix to free.
- */
 void free_matrix(int** matrix) {
     if (matrix) {
-        // Free the main data block
         free(matrix[0]);
-        // Free the array of row pointers
         free(matrix);
     }
 }
 
-/**
- * Reads matrix data from a file into the allocated matrix.
- *
- * @param filename The name of the file to read.
- * @param matrix The matrix to populate.
- */
 void read_matrix(const char* filename, int** matrix) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         perror("Error opening file");
         exit(EXIT_FAILURE);
     }
-
     for (int i = 0; i < ROWS; i++) {
         for (int j = 0; j < COLS; j++) {
             if (fscanf(file, "%d", &matrix[i][j]) != 1) {
@@ -86,19 +66,12 @@ void read_matrix(const char* filename, int** matrix) {
     fclose(file);
 }
 
-/**
- * Writes the matrix data to a file.
- *
- * @param filename The name of the file to write.
- * @param matrix The matrix containing the data.
- */
 void write_matrix(const char* filename, int** matrix) {
     FILE* file = fopen(filename, "w");
     if (file == NULL) {
         perror("Error opening output file");
         exit(EXIT_FAILURE);
     }
-
     for (int i = 0; i < ROWS; i++) {
         for (int j = 0; j < COLS; j++) {
             fprintf(file, "%d ", matrix[i][j]);
@@ -108,49 +81,69 @@ void write_matrix(const char* filename, int** matrix) {
     fclose(file);
 }
 
-int main() {
-    // 1. Allocate memory
-    int** matrixA = allocate_matrix();
-    int** matrixB = allocate_matrix();
-    int** matrixResult = allocate_matrix();
+// --- Main MPI Logic ---
 
-    if (matrixA == NULL || matrixB == NULL || matrixResult == NULL) {
-        fprintf(stderr, "Matrix allocation failed\n");
-        return 1;
-    }
+int main(int argc, char** argv) {
+    int rank, size;
+    double start_time, end_time;
 
-    // 2. Read input matrices
-    // Assuming matrixA.txt and matrixB.txt are in the same directory
-    read_matrix("matrixA.txt", matrixA);
-    read_matrix("matrixB.txt", matrixB);
+    // Standard MPI initialization
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // 3. Perform addition and time it
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start); // Start timer
+    // All processes synchronize here before the timer starts
+    MPI_Barrier(MPI_COMM_WORLD);
+    start_time = MPI_Wtime();
 
-    for (int i = 0; i < ROWS; i++) {
-        for (int j = 0; j < COLS; j++) {
-            matrixResult[i][j] = matrixA[i][j] + matrixB[i][j];
+    // *** THE SEQUENTIAL PART ***
+    // Only rank 0 does any of the actual work.
+    if (rank == 0) {
+        // 1. Allocate memory
+        int** matrixA = allocate_matrix();
+        int** matrixB = allocate_matrix();
+        int** matrixResult = allocate_matrix();
+
+        if (matrixA == NULL || matrixB == NULL || matrixResult == NULL) {
+            fprintf(stderr, "Matrix allocation failed\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
+
+        // 2. Read input matrices
+        read_matrix("matrixA.txt", matrixA);
+        read_matrix("matrixB.txt", matrixB);
+
+        // 3. Perform addition
+        // Note: We use clock_gettime for the *computation* part
+        // but MPI_Wtime for the *total* time.
+        // Let's stick to MPI_Wtime for the whole block for consistency.
+        for (int i = 0; i < ROWS; i++) {
+            for (int j = 0; j < COLS; j++) {
+                matrixResult[i][j] = matrixA[i][j] + matrixB[i][j];
+            }
+        }
+
+        // 4. Write result
+        write_matrix("result_sequential.txt", matrixResult);
+
+        // 5. Free memory
+        free_matrix(matrixA);
+        free_matrix(matrixB);
+        free_matrix(matrixResult);
+    }
+    // All other processes (rank > 0) do nothing.
+    // They just wait at the barrier.
+
+    // All processes sync up here before stopping the timer
+    MPI_Barrier(MPI_COMM_WORLD);
+    end_time = MPI_Wtime();
+
+    // 6. Only rank 0 prints the time
+    if (rank == 0) {
+        // Print time to stdout for the comparison program
+        printf("%f\n", end_time - start_time);
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &end); // Stop timer
-
-    // Calculate elapsed time in seconds
-    double time_spent = (end.tv_sec - start.tv_sec);
-    time_spent += (end.tv_nsec - start.tv_nsec) / 1000000000.0;
-
-    // 4. Write result
-    write_matrix("result_sequential.txt", matrixResult);
-
-    // 5. Free memory
-    free_matrix(matrixA);
-    free_matrix(matrixB);
-    free_matrix(matrixResult);
-
-    // 6. Print time to stdout for the comparison program
-    // This is the only output to stdout
-    printf("%f\n", time_spent);
-
+    MPI_Finalize();
     return 0;
 }

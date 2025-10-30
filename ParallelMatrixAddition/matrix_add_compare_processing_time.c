@@ -64,13 +64,13 @@ double capture_time(const char* command) {
 int main() {
     // 1. Compile the programs
     printf("Compiling sequential version...\n");
-    if (system("gcc -O3 -Wall matrix_add_sequential.c -o matrix_add_sequential") != 0) {
+    if (system("mpicc -O3 matrix_add_sequential.c -o matrix_add_sequential") != 0) {
         fprintf(stderr, "Sequential compilation failed.\n");
         return 1;
     }
 
     printf("Compiling parallel version...\n");
-    if (system("mpicc -O3 -Wall matrix_add_parallel.c -o matrix_add_parallel") != 0) {
+    if (system("mpicc -O3 matrix_add_parallel.c -o matrix_add_parallel") != 0) {
         fprintf(stderr, "Parallel compilation failed.\n");
         return 1;
     }

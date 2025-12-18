@@ -5,6 +5,8 @@
 #include <string.h>
 #include <ctype.h>
 
+// Note: We did not include the sample data ("matrix_a.txt" and "matrix_b.txt") and "result.txt" in this zip file because they are too large to upload to cscms.sit.
+
 // Program Execution Flow
 // 1. Compilation & Launch
 // - Command: "mpicc -o matrix_multiplication matrix_multiplication.c -O3 -march=native -std=c99" creates the executable with maximum optimization.
